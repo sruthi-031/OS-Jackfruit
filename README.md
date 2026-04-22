@@ -102,27 +102,27 @@ sudo dmesg | grep monitor
 
 ### CPU Hog Execution
 
-![Supervisor](screenshots/cpu_hog.jpeg)
+![Cpu](screenshots/cpu_hog.jpeg)
 
 ### Memory Hog Execution
 
-![Supervisor](screenshots/memory_hog.jpeg)
+![Memory](screenshots/memory_hog.jpeg)
 
 ### Multi Container Execution
 
-![Supervisor](screenshots/multicontainer.jpeg)
+![Multi](screenshots/multicontainer.jpeg)
 
 ### PS Command Output
 
-![Supervisor](screenshots/ps.jpeg)
+![PS](screenshots/ps.jpeg)
 
 ### Logs Output
 
-![Supervisor](screenshots/logs.jpeg)
+![Logs](screenshots/logs.jpeg)
 
 ### Hard Limit Triggered
 
-![Supervisor](screenshots/hard_limit.jpeg)
+![Hard](screenshots/hard_limit.jpeg)
 
 ---
 
