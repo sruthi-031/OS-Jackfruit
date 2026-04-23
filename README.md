@@ -120,6 +120,11 @@ sudo dmesg | grep monitor
 
 ![Logs](screenshots/logs.jpeg)
 
+
+###Soft Limit Triggered
+![Soft](screenshots/soft_limit.jpeg)
+
+
 ### Hard Limit Triggered
 
 ![Hard](screenshots/hard_limit.jpeg)
