@@ -1,271 +1,182 @@
 #define _GNU_SOURCE
-
+#include <sched.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
-#include <sched.h>
 #include <string.h>
 #include <sys/wait.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <fcntl.h>
-#include <signal.h>
-#include <sys/ioctl.h>
 #include <sys/mount.h>
-#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/ioctl.h>
+#include <signal.h>
+#include "monitor_ioctl.h"
 
-#include "monitor_ioctl.h"   
+#define STACK_SIZE (1024 * 1024)
 
+typedef struct {
+    char id[32];
+    char rootfs[256];
+    char command[256];
+    int nice_value;
+    unsigned long soft_limit;
+    unsigned long hard_limit;
+} config_t;
 
-#define SOCKET_PATH "/tmp/mini_runtime.sock"
-#define STACK_SIZE (1024*1024)
-#define MAX 20
-
-struct container {
-    char name[32];
-    pid_t pid;
-    char state[16];
-};
-
-struct container table[MAX];
-int count = 0;
-
-/* ================= CHILD ================= */
-int child_fn(void *arg)
+/* ================= CHILD FUNCTION ================= */
+static int child_fn(void *arg)
 {
-    char **args = (char **)arg;
+    config_t *cfg = (config_t *)arg;
 
-    char *rootfs = args[0];
-    char *cmd    = args[1];
-    char *name   = args[2];
+    /* Set hostname */
+    if (sethostname(cfg->id, strlen(cfg->id)) != 0) {
+        perror("sethostname failed");
+    }
 
-    // 1. Enter container filesystem
-    if (chroot(rootfs) != 0) {
-        perror("chroot");
+    /* Change root filesystem */
+    if (chroot(cfg->rootfs) != 0) {
+        perror("chroot failed");
         return 1;
     }
 
     if (chdir("/") != 0) {
-        perror("chdir");
+        perror("chdir failed");
         return 1;
     }
 
-    // 2. Mount /proc
+    /* Mount /proc */
     if (mount("proc", "/proc", "proc", 0, NULL) != 0) {
-        perror("mount");
+        perror("mount failed");
+        return 1;
     }
 
-    // 3. Create log file in HOST (important)
-    char logfile[100];
-    snprintf(logfile, sizeof(logfile), "%s.log", name);
-
-    int fd = open(logfile, O_CREAT | O_WRONLY | O_APPEND, 0644);
-    if (fd < 0) {
-        perror("open log");
-    } else {
-        dup2(fd, STDOUT_FILENO);
-        dup2(fd, STDERR_FILENO);
-        close(fd);
+    /* Set nice value */
+    if (cfg->nice_value != 0) {
+        if (nice(cfg->nice_value) == -1) {
+            perror("nice failed");
+        }
     }
 
-    // 4. Execute command
-    char *exec_args[] = {cmd, NULL};
-    execvp(cmd, exec_args);
+    /* Print container details */
+    char hostname[64];
+    if (gethostname(hostname, sizeof(hostname)) != 0) {
+        perror("gethostname failed");
+        strcpy(hostname, "unknown");
+    }
 
-    // If exec fails
-    perror("execvp");
+    printf("\n===== CONTAINER START =====\n");
+    printf("Container ID : %s\n", cfg->id);
+    printf("PID          : %d\n", getpid());
+    printf("Hostname     : %s\n", hostname);
+    printf("Nice Value   : %d\n", cfg->nice_value);
+    printf("===========================\n\n");
+    fflush(stdout);
+
+    /* Execute command */
+    execlp(cfg->command, cfg->command, NULL);
+
+    perror("exec failed");
     return 1;
 }
- 
 
-
-/* ================= RUN ================= */
-void run_container(char *name, char *rootfs, char *cmd, int wait_flag)
+/* ================= REGISTER MONITOR ================= */
+void register_monitor(pid_t pid, config_t *cfg)
 {
-    char *stack = malloc(STACK_SIZE);
-    char *top = stack + STACK_SIZE;
-
-    char *args[] = {rootfs, cmd, NULL};
-
-    pid_t pid = clone(child_fn, top,
-        CLONE_NEWPID | CLONE_NEWUTS | CLONE_NEWNS | SIGCHLD,
-        args);
-
-    if (pid < 0) {
-        perror("clone");
-        return;
-    }
-
-    printf("Container %s started PID=%d\n", name, pid);
-
-    /* store */
-    table[count].pid = pid;
-    strcpy(table[count].name, name);
-    strcpy(table[count].state, "running");
-    count++;
-
-    /* register with kernel monitor */
     int fd = open("/dev/container_monitor", O_RDWR);
-    if (fd >= 0) {
-        struct monitor_request req;
-        req.pid = pid;
-        req.soft_limit_bytes = 50 * 1024 * 1024;
-        req.hard_limit_bytes = 100 * 1024 * 1024;
-        strncpy(req.container_id, name, MONITOR_NAME_LEN);
-
-        ioctl(fd, MONITOR_REGISTER, &req);
-        close(fd);
-    }
-
-    if (wait_flag)
-        waitpid(pid, NULL, 0);
-}
-
-/* ================= PS ================= */
-void list_containers()
-{
-    int found = 0;
-
-    for (int i = 0; i < count; i++) {
-        if (kill(table[i].pid, 0) == 0) {
-            if (!found) {
-                printf("Running containers:\n");
-                found = 1;
-            }
-            printf(" - %s (PID=%d)\n", table[i].name, table[i].pid);
-        }
-    }
-
-    if (!found)
-        printf("No running containers\n");
-}
-
-/* ================= STOP ================= */
-void stop_container(char *name)
-{
-    for (int i = 0; i < count; i++) {
-        if (strcmp(table[i].name, name) == 0) {
-            kill(table[i].pid, SIGKILL);
-            printf("Stopped %s\n", name);
-            return;
-        }
-    }
-    printf("Container not found\n");
-}
-
-/* ================= LOGS ================= */
-void show_logs(char *name)
-{
-    char file[100];
-    sprintf(file, "logs/%s.log", name);
-
-    FILE *fp = fopen(file, "r");
-    if (!fp) {
-        printf("No logs\n");
+    if (fd < 0) {
+        perror("open monitor failed");
         return;
     }
 
-    char c;
-    while ((c = fgetc(fp)) != EOF)
-        putchar(c);
+    struct monitor_request req;
+    memset(&req, 0, sizeof(req));
 
-    fclose(fp);
-}
+    req.pid = pid;
+    req.soft_limit_bytes = cfg->soft_limit;
+    req.hard_limit_bytes = cfg->hard_limit;
 
-/* ================= SUPERVISOR ================= */
-void start_supervisor()
-{
-    signal(SIGCHLD, SIG_IGN);
+    strncpy(req.container_id, cfg->id, MONITOR_NAME_LEN - 1);
 
-    int server_fd, client_fd;
-    struct sockaddr_un addr;
-
-    unlink(SOCKET_PATH);
-
-    server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
-
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SOCKET_PATH);
-
-    bind(server_fd, (struct sockaddr*)&addr, sizeof(addr));
-    listen(server_fd, 5);
-
-    printf("Supervisor running...\n");
-
-    while (1) {
-        client_fd = accept(server_fd, NULL, NULL);
-
-        char buffer[256] = {0};
-        read(client_fd, buffer, sizeof(buffer));
-
-        char cmd[50]={0}, name[50]={0}, rootfs[100]={0}, exec_cmd[100]={0};
-        sscanf(buffer, "%s %s %s %s", cmd, name, rootfs, exec_cmd);
-
-        if (strcmp(cmd, "start") == 0) {
-            run_container(name, rootfs, exec_cmd, 0);
-        }
-        else if (strcmp(cmd, "run") == 0) {
-            run_container(name, rootfs, exec_cmd, 1);
-        }
-        else if (strcmp(cmd, "ps") == 0) {
-            list_containers();
-        }
-        else if (strcmp(cmd, "stop") == 0) {
-            stop_container(name);
-        }
-        else if (strcmp(cmd, "logs") == 0) {
-            show_logs(name);
-        }
-        else {
-            printf("Invalid command\n");
-        }
-
-        close(client_fd);
+    if (ioctl(fd, MONITOR_REGISTER, &req) < 0) {
+        perror("ioctl register failed");
     }
+
+    close(fd);
 }
 
-/* ================= CLIENT ================= */
-void send_command(int argc, char *argv[])
+/* ================= USAGE ================= */
+void usage(char *prog)
 {
-    int sock = socket(AF_UNIX, SOCK_STREAM, 0);
-
-    struct sockaddr_un addr;
-    addr.sun_family = AF_UNIX;
-    strcpy(addr.sun_path, SOCKET_PATH);
-
-    connect(sock, (struct sockaddr*)&addr, sizeof(addr));
-
-    char buffer[256];
-
-    if (argc == 2)
-        sprintf(buffer, "%s", argv[1]);
-    else if (argc == 3)
-        sprintf(buffer, "%s %s", argv[1], argv[2]);
-    else
-        sprintf(buffer, "%s %s %s %s", argv[1], argv[2], argv[3], argv[4]);
-
-    write(sock, buffer, strlen(buffer));
-    close(sock);
+    printf("Usage:\n");
+    printf("%s run <id> <rootfs> <cmd> [--nice N] [--soft-mib X] [--hard-mib Y]\n", prog);
 }
 
 /* ================= MAIN ================= */
 int main(int argc, char *argv[])
 {
-    if (argc < 2) {
-        printf("Usage:\n");
-        printf(" ./engine supervisor\n");
-        printf(" ./engine start <name> <rootfs> <cmd>\n");
-        printf(" ./engine run <name> <rootfs> <cmd>\n");
-        printf(" ./engine ps\n");
-        printf(" ./engine logs <name>\n");
-        printf(" ./engine stop <name>\n");
+    if (argc < 5) {
+        usage(argv[0]);
         return 1;
     }
 
-    if (strcmp(argv[1], "supervisor") == 0)
-        start_supervisor();
-    else
-        send_command(argc, argv);
+    if (strcmp(argv[1], "run") != 0) {
+        usage(argv[0]);
+        return 1;
+    }
 
+    config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+
+    strncpy(cfg.id, argv[2], sizeof(cfg.id) - 1);
+    strncpy(cfg.rootfs, argv[3], sizeof(cfg.rootfs) - 1);
+    strncpy(cfg.command, argv[4], sizeof(cfg.command) - 1);
+
+    /* Defaults */
+    cfg.nice_value = 0;
+    cfg.soft_limit = 50 * 1024 * 1024;   // 50MB
+    cfg.hard_limit = 100 * 1024 * 1024;  // 100MB
+
+    /* Parse optional arguments */
+    for (int i = 5; i < argc; i++) {
+        if (strcmp(argv[i], "--nice") == 0 && i + 1 < argc) {
+            cfg.nice_value = atoi(argv[++i]);
+        } 
+        else if (strcmp(argv[i], "--soft-mib") == 0 && i + 1 < argc) {
+            cfg.soft_limit = atol(argv[++i]) * 1024 * 1024;
+        } 
+        else if (strcmp(argv[i], "--hard-mib") == 0 && i + 1 < argc) {
+            cfg.hard_limit = atol(argv[++i]) * 1024 * 1024;
+        }
+    }
+
+    /* Allocate stack */
+    char *stack = malloc(STACK_SIZE);
+    if (!stack) {
+        perror("malloc failed");
+        exit(1);
+    }
+
+    /* Create container */
+    pid_t pid = clone(child_fn, stack + STACK_SIZE,
+                      CLONE_NEWPID | CLONE_NEWNS | CLONE_NEWUTS | SIGCHLD,
+                      &cfg);
+
+    if (pid < 0) {
+        perror("clone failed");
+        exit(1);
+    }
+
+    printf("Started container '%s' with PID %d\n", cfg.id, pid);
+
+    /* Register with kernel monitor */
+    register_monitor(pid, &cfg);
+
+    /* Wait for container */
+    if (waitpid(pid, NULL, 0) < 0) {
+        perror("waitpid failed");
+    }
+
+    printf("Container '%s' exited\n", cfg.id);
+
+    free(stack);
     return 0;
 }
