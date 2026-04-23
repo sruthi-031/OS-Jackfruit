@@ -96,9 +96,16 @@ sudo dmesg | grep monitor
 
 ##  Screenshots
 
-### Supervisor Running
 
 ![Supervisor](screenshots/supervisor.jpeg)
+
+### Alpha Container Execution
+
+![Alpha](screenshots/alpha_container.jpeg)
+
+### Beta Container Execution
+
+![Beta](screenshots/beta_container.jpeg)
 
 ### CPU Hog Execution
 
@@ -110,7 +117,7 @@ sudo dmesg | grep monitor
 
 ### Multi Container Execution
 
-![Multi](screenshots/multicontainer.jpeg)
+![Multi](screenshots/multi_container.jpeg)
 
 ### PS Command Output
 
@@ -120,11 +127,13 @@ sudo dmesg | grep monitor
 
 ![Logs](screenshots/logs.jpeg)
 
+### CPU Utilization
 
-### Hard and Soft  Limit Triggered
+![CPU](screenshots/cpu_utilization.jpeg)
 
-![Hard](screenshots/hard_limit.jpeg)
+### Hard and Soft Limit Triggered
 
+![Hard](screenshots/hard_soft_limit.jpeg)
 ---
 
 ##  Observations
